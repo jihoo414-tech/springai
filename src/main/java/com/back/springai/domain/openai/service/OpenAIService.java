@@ -1,5 +1,7 @@
 package com.back.springai.domain.openai.service;
 
+import com.back.springai.domain.openai.entity.ChatEntity;
+import com.back.springai.domain.openai.repository.ChatRepository;
 import com.openai.models.audio.AudioResponseFormat;
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.audio.transcription.AudioTranscriptionPrompt;
@@ -10,6 +12,7 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -36,6 +39,8 @@ public class OpenAIService {
     private final OpenAiAudioSpeechModel openAiAudioSpeechModel;
     private final OpenAiAudioTranscriptionModel openAiAudioTranscriptionModel;
     private final ChatMemoryRepository chatMemoryRepository;
+    private final ChatRepository chatRepository;
+
 
 
 
@@ -64,38 +69,64 @@ public class OpenAIService {
 
     public Flux<String> generateStream(String text) {
 
-        // 유저&페이지별 ChatMemory를 관리하기 위한 key (우선은 명시적으로)
-        String userId = "xxxjjhhh" + "_" + "3";
+        String userId = "xxxjjhhh_3";
+
+        ChatEntity userChat = new ChatEntity();
+        userChat.setUserId(userId);
+        userChat.setType(MessageType.USER);
+        userChat.setContent(text);
+
+        // 사용자 메시지는 바로 저장
+        chatRepository.save(userChat);
 
         ChatMemory chatMemory = MessageWindowChatMemory.builder()
                 .maxMessages(10)
                 .chatMemoryRepository(chatMemoryRepository)
                 .build();
-        chatMemory.add(userId, new UserMessage(text)); // 신규 메시지도 추가
 
-        // 옵션
+        chatMemory.add(userId, new UserMessage(text));
+
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .model("gpt-4.1-mini")
                 .temperature(0.7)
                 .build();
 
-        // 프롬프트
-        Prompt prompt = new Prompt(chatMemory.get(userId), options);
+        Prompt prompt = new Prompt(
+                chatMemory.get(userId),
+                options
+        );
 
-        // 응답 메시지를 저장할 임시 버퍼
-        StringBuilder responseBuffer = new StringBuilder();
+        StringBuilder buffer = new StringBuilder();
 
-        // 요청 및 응답
         return openAiChatModel.stream(prompt)
                 .mapNotNull(response -> {
-                    String token = response.getResult().getOutput().getText();
-                    responseBuffer.append(token);
-                    return token;
+
+                    String token = response.getResult()
+                            .getOutput()
+                            .getText();
+
+                    if (token != null) {
+                        buffer.append(token);
+                        return token;
+                    }
+
+                    return null;
                 })
                 .doOnComplete(() -> {
 
-                    chatMemory.add(userId, new AssistantMessage(responseBuffer.toString()));
-                    chatMemoryRepository.saveAll(userId, chatMemory.get(userId));
+                    String result = buffer.toString();
+
+                    chatMemory.add(
+                            userId,
+                            new AssistantMessage(result)
+                    );
+
+                    ChatEntity assistantChat = new ChatEntity();
+                    assistantChat.setUserId(userId);
+                    assistantChat.setType(MessageType.ASSISTANT);
+                    assistantChat.setContent(result);
+
+                    chatRepository.save(assistantChat);
                 });
     }
 
